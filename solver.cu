@@ -40,17 +40,17 @@ void vectorDot(const floatType* a, const floatType* b, const int n, floatType* a
 }
 
 /* y <- ax + y */
-void axpy(const floatType a, const floatType* x, const int n, floatType* y){
-	int i;
-	for(i=0; i<n; i++){
+__device__ __host__ void axpy(const floatType a, const floatType* x, const int n, floatType* y){
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if(i<n){
 		y[i]=a*x[i]+y[i];
 	}
 }
 
 /* y <- x + ay */
-void xpay(const floatType* x, const floatType a, const int n, floatType* y){
-	int i;
-	for(i=0; i<n; i++){
+__device__ __host__ void xpay(const floatType* x, const floatType a, const int n, floatType* y){
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if(i<n){
 		y[i]=x[i]+a*y[i];
 	}
 }
@@ -151,7 +151,7 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 	timeMatvec_s = getWTime();
 	matvec<<<blocksPerGrid,threadsPerBlock>>>(n, nnz, maxNNZ, data, indices, length, x, r);
 	timeMatvec += getWTime() - timeMatvec_s;
-	xpay(b, -1.0, n, r);
+	xpay<<<blocksPerGrid, threadsPerBlocks>>>(b, -1.0, n, r);
 	DBGVEC("r = b - Ax = ", r, n);
 	
 
@@ -184,11 +184,11 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 		DBGSCA("alpha = rho / dot_pq = ", alpha);
 
 		/* x(k+1)    = x(k) + alpha*p(k) */
-		axpy(alpha, p, n, x);
+		axpy<<<blocksPerGrid, threadsPerBlock>>>(alpha, p, n, x);
 		DBGVEC("x = x + alpha * p= ", x, n);
 
 		/* r(k+1)    = r(k) - alpha*q(k) */
-		axpy(-alpha, q, n, r);
+		axpy<<<blocksPerGrid, threadsPerBlock>>>(-alpha, q, n, r);
 		DBGVEC("r = r - alpha * q= ", r, n);
 
 
@@ -221,7 +221,7 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 		DBGSCA("beta = rho / rho_old= ", beta);
 
 		/* p(k+1)    = r(k+1) + beta*p(k) */
-		xpay(r, beta, n, p);
+		xpay<<<blocksPerGrid, threadsPerBlock>>>(r, beta, n, p);
 		DBGVEC("p = r + beta * p> = ", p, n);
 
 	}
