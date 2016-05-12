@@ -40,7 +40,7 @@ void vectorDot(const floatType* a, const floatType* b, const int n, floatType* a
 }
 
 /* y <- ax + y */
-__device__ __host__ void axpy(const floatType a, const floatType* x, const int n, floatType* y){
+__device__ void axpy(const floatType a, const floatType* x, const int n, floatType* y){
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if(i<n){
 		y[i]=a*x[i]+y[i];
@@ -48,7 +48,7 @@ __device__ __host__ void axpy(const floatType a, const floatType* x, const int n
 }
 
 /* y <- x + ay */
-__device__ __host__ void xpay(const floatType* x, const floatType a, const int n, floatType* y){
+__device__ void xpay(const floatType* x, const floatType a, const int n, floatType* y){
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 	if(i<n){
 		y[i]=x[i]+a*y[i];
@@ -57,7 +57,7 @@ __device__ __host__ void xpay(const floatType* x, const floatType a, const int n
 
 /* y <- A*x
  * Remember that A is stored in the ELLPACK-R format (data, indices, length, n, nnz, maxNNZ). */
-__inline__ __host__ __device__ void matvec(const int n, const int nnz, const int maxNNZ, const floatType* data, const int* indices, const int* length, const floatType* x, floatType* y){
+__device__ void matvec(const int n, const int nnz, const int maxNNZ, const floatType* data, const int* indices, const int* length, const floatType* x, floatType* y){
 	int j, k;
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -82,6 +82,24 @@ void nrm2(const floatType* x, const int n, floatType* nrm){
 	*nrm=sqrt(temp);
 }
 
+//kernels
+__global__ void matvec_kernel(const int d_n, const int d_nnz, const int d_maxNNZ, const floatType* d_data, const int* d_indices, const int* d_length, const floatType* d_x, floatType* d_y){
+
+matvec(d_n, d_nnz, d_maxNNZ, d_data, d_indices, d_length, d_x, d_y);
+
+}
+
+__global__ void axpy_kernel(const floatType a, const floatType* d_x, const int d_n, floatType* d_y){
+
+axpy(a, d_x, d_n, d_y);
+
+}
+
+__global__ void xpay_kernel(const floatType* d_x, const floatType a, const int d_n, floatType* d_y){
+
+xpay(d_x, a, d_n, d_y);
+
+}
 
 /***************************************
  *         Conjugate Gradient          *
@@ -107,7 +125,11 @@ void nrm2(const floatType* x, const int n, floatType* nrm){
 ***************************************/
 void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, const int* indices, const int* length, const floatType* b, floatType* x, struct SolverConfig* sc){
 
+	dim3 threadsPerBlock(128);
+	dim3 blocksPerGrid(n/threadsPerBlock.x);
+
 	floatType* r, *p, *q;
+	floatType *d_p, *d_q;
 	floatType alpha, beta, rho, rho_old, dot_pq, bnrm2;
 	int iter;
  	double timeMatvec_s;
@@ -117,7 +139,8 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 	r = (floatType*)malloc(n * sizeof(floatType));
 	p = (floatType*)malloc(n * sizeof(floatType));
 	q = (floatType*)malloc(n * sizeof(floatType));
-	
+	cudaMalloc(&d_p, n * sizeof(floatType));
+	cudaMalloc(&d_q, n * sizeof(floatType));
 
 	DBGMAT("Start matrix A = ", n, nnz, maxNNZ, data, indices, length)
 	DBGVEC("b = ", b, n);
@@ -125,33 +148,33 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 
 	/* r(0)    = b - Ax(0) */
 
-	dim3 threadsPerBlock(128);
-	dim3 blocksPerGrid(n/threadsPerBlock.x);
+
 	int *d_n, *d_nnz, *d_maxNNZ, *d_indices, *d_length;
-	floatType *d_data, *d_x, *d_r;
+	floatType *d_data, *d_x, *d_r, *d_b;
 	cudaMalloc(&d_n, sizeof(int));
 	cudaMalloc(&d_nnz, sizeof(int));
 	cudaMalloc(&d_maxNNZ, sizeof(int));
-	cudaMalloc(&d_indices, sizeof(int));
-	cudaMalloc(&d_length, sizeof(int));
-	cudaMalloc(&d_data, sizeof(floatType));
-	cudaMalloc(&d_x, sizeof(floatType));
-	cudaMalloc(&d_r, sizeof(floatType));
+	cudaMalloc(&d_indices, n * maxNNZ * sizeof(int));
+	cudaMalloc(&d_length, n * sizeof(int));
+	cudaMalloc(&d_data, n * maxNNZ * sizeof(floatType));
+	cudaMalloc(&d_x, n * sizeof(floatType));
+	cudaMalloc(&d_r, n * sizeof(floatType));
+	cudaMalloc(&d_b, n * sizeof(floatType));
 
 	cudaMemcpy(d_n, &n, sizeof(int), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_nnz, &nnz, sizeof(int), cudaMemcpyHostToDevice);
 	cudaMemcpy(d_maxNNZ, &maxNNZ, sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_indices, indices, sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_length, length, sizeof(int), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_data, data, sizeof(floatType), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_x, x, sizeof(floatType), cudaMemcpyHostToDevice);
-	cudaMemcpy(d_r, r, sizeof(floatType), cudaMemcpyHostToDevice);	
-
+	cudaMemcpy(d_indices, indices, n * maxNNZ * sizeof(int), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_length, length, n * sizeof(int), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_data, data, n * maxNNZ * sizeof(floatType), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_x, x, n * sizeof(floatType), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_r, r, n * sizeof(floatType), cudaMemcpyHostToDevice);	
+	cudaMemcpy(d_b, b, n * sizeof(floatType), cudaMemcpyHostToDevice);	
 
 	timeMatvec_s = getWTime();
-	matvec<<<blocksPerGrid,threadsPerBlock>>>(n, nnz, maxNNZ, data, indices, length, x, r);
+	matvec_kernel<<<blocksPerGrid,threadsPerBlock>>>(*d_n, *d_nnz, *d_maxNNZ, d_data, d_indices, d_length, d_x, d_r);
 	timeMatvec += getWTime() - timeMatvec_s;
-	xpay<<<blocksPerGrid, threadsPerBlocks>>>(b, -1.0, n, r);
+	xpay_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_b, -1.0, *d_n, d_r);
 	DBGVEC("r = b - Ax = ", r, n);
 	
 
@@ -171,7 +194,7 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 		DBGMSG("=============== Iteration %d ======================\n", iter);
 		/* q(k)      = A * p(k) */
 		timeMatvec_s = getWTime();
-		matvec<<<blocksPerGrid,threadsPerBlock>>>(n, nnz, maxNNZ, data, indices, length, x, r);
+		matvec_kernel<<<blocksPerGrid,threadsPerBlock>>>(*d_n, *d_nnz, *d_maxNNZ, d_data, d_indices, d_length, d_x, d_r);
 		timeMatvec += getWTime() - timeMatvec_s;
 		DBGVEC("q = A * p= ", q, n);
 
@@ -184,11 +207,11 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 		DBGSCA("alpha = rho / dot_pq = ", alpha);
 
 		/* x(k+1)    = x(k) + alpha*p(k) */
-		axpy<<<blocksPerGrid, threadsPerBlock>>>(alpha, p, n, x);
+		axpy_kernel<<<blocksPerGrid, threadsPerBlock>>>(alpha, d_p, *d_n, d_x);
 		DBGVEC("x = x + alpha * p= ", x, n);
 
 		/* r(k+1)    = r(k) - alpha*q(k) */
-		axpy<<<blocksPerGrid, threadsPerBlock>>>(-alpha, q, n, r);
+		axpy_kernel<<<blocksPerGrid, threadsPerBlock>>>(-alpha, d_q, *d_n, d_r);
 		DBGVEC("r = r - alpha * q= ", r, n);
 
 
@@ -221,7 +244,7 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 		DBGSCA("beta = rho / rho_old= ", beta);
 
 		/* p(k+1)    = r(k+1) + beta*p(k) */
-		xpay<<<blocksPerGrid, threadsPerBlock>>>(r, beta, n, p);
+		xpay_kernel<<<blocksPerGrid, threadsPerBlock>>>(d_r, beta, *d_n, d_p);
 		DBGVEC("p = r + beta * p> = ", p, n);
 
 	}
@@ -230,6 +253,10 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 	 * time for the sparse matrix vector
 	 * product which is the most expensive 
 	 * function in the whole CG algorithm. */
+
+	//x update
+	cudaMemcpy(x, d_x, n * sizeof(floatType), cudaMemcpyDeviceToHost);
+
 	sc->iter = iter;
 	sc->timeMatvec = timeMatvec;
 
@@ -241,7 +268,10 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 	cudaFree(d_length);	
 	cudaFree(d_x);	
 	cudaFree(d_r);	
-	cudaFree(d_indices);	
+	cudaFree(d_indices);
+	cudaFree(d_q);	
+	cudaFree(d_p);	
+	cudaFree(d_b);	
 
 	free(r);
 	free(p);
@@ -249,3 +279,5 @@ void cg(const int n, const int nnz, const int maxNNZ, const floatType* data, con
 	
 
 }
+
+
